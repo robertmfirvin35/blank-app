@@ -36,13 +36,14 @@ for key, default in {
     "messages": [],
     "voice_text": "",
     "last_activity": time.time(),
+    "show_admin": False,
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
 
-# ── Sidebar ──────────────────────────────────────────────────────────────────
+# ── Sidebar (settings only) ──────────────────────────────────────────────────
 with st.sidebar:
-    st.title("⚙️ Jarvis Config")
+    st.title("⚙️ Settings")
     api_key = st.text_input(
         "Together AI Key", type="password",
         help="Free key at together.ai — used to call Hermes"
@@ -58,42 +59,51 @@ with st.sidebar:
         st.session_state.messages = []
         st.rerun()
 
-    st.markdown("---")
-    with st.expander("🛠️ Admin / Debug Panel", expanded=not _OPENAI_OK):
-        st.markdown("**Worker Health**")
-        st.write(f"🐍 Python: `{sys.version.split()[0]}`")
-        st.write(f"🖥️ Platform: `{platform.system()} {platform.release()}`")
+# ── Header row ───────────────────────────────────────────────────────────────
+col_title, col_admin = st.columns([5, 1])
+with col_title:
+    st.markdown("## 🤖 J.A.R.V.I.S.")
+    st.caption("Powered by Hermes via Together AI")
+with col_admin:
+    st.write("")
+    if st.button("🛠️ Admin", use_container_width=True):
+        st.session_state.show_admin = not st.session_state.show_admin
 
-        if _OPENAI_OK:
-            st.success(f"✅ openai {_OPENAI_VER} loaded")
-        else:
-            st.error(f"❌ openai failed: {_OPENAI_ERR}")
-            st.code("pip install openai==1.35.13 httpx==0.27.2", language="bash")
+# ── Admin / Debug Panel (main page, always reachable) ────────────────────────
+if st.session_state.show_admin:
+    with st.container(border=True):
+        st.markdown("### 🛠️ Admin & Debug Panel")
 
-        st.write(f"📦 httpx: `{_HTTPX_VER}`")
-        st.write(f"📦 streamlit: `{st.__version__}`")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Worker health**")
+            st.write(f"🐍 Python: `{sys.version.split()[0]}`")
+            st.write(f"🖥️ Platform: `{platform.system()} {platform.release()}`")
+            st.write(f"📦 streamlit: `{st.__version__}`")
+            st.write(f"📦 httpx: `{_HTTPX_VER}`")
+            if _OPENAI_OK:
+                st.success(f"✅ openai {_OPENAI_VER} — OK")
+            else:
+                st.error(f"❌ openai — FAILED\n\n`{_OPENAI_ERR}`")
+                st.code("# Add these exact lines to requirements.txt\nopenai==1.35.13\nhttpx==0.27.2")
 
-        st.markdown("---")
-        st.markdown("**Session**")
-        st.write(f"Messages in memory: `{len(st.session_state.messages)}`")
-        idle = int(time.time() - st.session_state.last_activity)
-        st.write(f"Idle: `{idle}s`")
+        with c2:
+            st.markdown("**Session**")
+            st.write(f"Messages in memory: `{len(st.session_state.messages)}`")
+            idle = int(time.time() - st.session_state.last_activity)
+            st.write(f"Idle time: `{idle}s`")
+            st.write(f"API key set: `{'yes' if api_key else 'no'}`")
+            st.markdown("**Quick fixes**")
+            st.markdown("""
+- **Worker offline** → Reboot on Streamlit Cloud; confirm branch is `claude/funny-hopper-yphn7v`
+- **openai error** → See red box on the left — copy the fix into requirements.txt
+- **No voice/mic** → Use Chrome or Edge (not Firefox)
+- **Keeps disconnecting** → JS keep-alive is running every 20s; if still drops, Reboot app
+            """)
+            if st.button("🔄 Force refresh"):
+                st.rerun()
 
-        st.markdown("---")
-        st.markdown("**Common fixes**")
-        st.markdown("""
-- **Worker offline** → Check the branch is `claude/funny-hopper-yphn7v`, then Reboot app on Streamlit Cloud
-- **openai error** → Pin versions in requirements.txt: `openai==1.35.13` and `httpx==0.27.2`
-- **No voice** → Use Chrome or Edge (Firefox lacks Web Speech API)
-- **Disconnecting** → The JS keep-alive pings every 20s; if it still drops, Reboot app
-        """)
-
-        if st.button("🔄 Force page refresh"):
-            st.rerun()
-
-# ── Header ───────────────────────────────────────────────────────────────────
-st.markdown("## 🤖 J.A.R.V.I.S.")
-st.caption("Powered by Hermes via Together AI")
+    st.divider()
 
 # ── Voice bridge ─────────────────────────────────────────────────────────────
 VOICE_HTML = """
@@ -108,21 +118,18 @@ VOICE_HTML = """
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
 </style>
 <div id="wrap">
-  <button id="btn-mic"  onclick="toggleMic()">🎤 Speak to Jarvis</button>
+  <button id="btn-mic" onclick="toggleMic()">🎤 Speak to Jarvis</button>
   <button id="btn-mute" onclick="mute()">🔇 Mute</button>
 </div>
 <div id="status">Ready.</div>
-
 <script>
-var rec=null, going=false;
-
-function toggleMic(){ going ? stopMic() : startMic(); }
-
+var rec=null,going=false;
+function toggleMic(){going?stopMic():startMic();}
 function startMic(){
   var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   if(!SR){setStatus('⚠️ Use Chrome for voice input.');return;}
   rec=new SR();
-  rec.lang='en-US'; rec.continuous=false; rec.interimResults=false;
+  rec.lang='en-US';rec.continuous=false;rec.interimResults=false;
   rec.onstart=function(){
     going=true;
     document.getElementById('btn-mic').classList.add('on');
@@ -143,33 +150,23 @@ function startMic(){
   };
   rec.start();
 }
-
-function stopMic(){ if(rec)rec.stop(); }
-function mute(){ if(window.speechSynthesis)window.speechSynthesis.cancel(); }
-
+function stopMic(){if(rec)rec.stop();}
+function mute(){if(window.speechSynthesis)window.speechSynthesis.cancel();}
 function speak(text){
   if(!window.speechSynthesis)return;
   window.speechSynthesis.cancel();
   var u=new SpeechSynthesisUtterance(text);
-  u.rate=0.95; u.pitch=0.85; u.volume=1;
+  u.rate=0.95;u.pitch=0.85;u.volume=1;
   var vs=window.speechSynthesis.getVoices();
   var v=vs.find(function(x){return /daniel|alex|google uk|en-gb/i.test(x.name+x.lang);});
   if(v)u.voice=v;
   window.speechSynthesis.speak(u);
 }
-
 window.addEventListener('message',function(e){
-  if(e.data&&e.data.type==='streamlit:render'&&e.data.args&&e.data.args.speak){
-    speak(e.data.args.speak);
-  }
+  if(e.data&&e.data.type==='streamlit:render'&&e.data.args&&e.data.args.speak)speak(e.data.args.speak);
 });
-
 function setStatus(m){document.getElementById('status').textContent=m;}
-
-// Keep-alive so the WebSocket doesn't time out
-setInterval(function(){
-  window.parent.postMessage({type:'streamlit:keepAlive'},'*');
-},20000);
+setInterval(function(){window.parent.postMessage({type:'streamlit:keepAlive'},'*');},20000);
 </script>
 """
 
@@ -192,11 +189,11 @@ for msg in st.session_state.messages:
 # ── Generate response ─────────────────────────────────────────────────────────
 if prompt:
     if not api_key:
-        st.warning("⚠️ Enter your Together AI key in the sidebar to activate Jarvis.")
+        st.warning("⚠️ Enter your Together AI key in the sidebar (or tap ⚙️ Settings) to activate Jarvis.")
         st.stop()
 
     if not _OPENAI_OK:
-        st.error("The openai package didn't load — check the sidebar for details.")
+        st.error("The openai package didn't load — tap 🛠️ Admin at the top for details and the fix.")
         st.stop()
 
     st.session_state.messages.append({"role": "user", "content": prompt})
