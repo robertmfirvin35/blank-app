@@ -2,14 +2,26 @@ import streamlit as st
 import streamlit.components.v1 as components
 import time
 import json
+import sys
+import platform
 
 # Safe import — app renders even if openai failed to install
 try:
     from openai import OpenAI
+    import openai as _oai_mod
     _OPENAI_OK = True
+    _OPENAI_VER = _oai_mod.__version__
+    _OPENAI_ERR = None
 except Exception as _openai_err:
     _OPENAI_OK = False
+    _OPENAI_VER = "not installed"
     _OPENAI_ERR = str(_openai_err)
+
+try:
+    import httpx as _httpx
+    _HTTPX_VER = _httpx.__version__
+except Exception:
+    _HTTPX_VER = "not installed"
 
 st.set_page_config(page_title="Jarvis", page_icon="🤖", layout="wide")
 
@@ -46,8 +58,38 @@ with st.sidebar:
         st.session_state.messages = []
         st.rerun()
 
-    if not _OPENAI_OK:
-        st.error(f"openai package failed to load:\n{_OPENAI_ERR}")
+    st.markdown("---")
+    with st.expander("🛠️ Admin / Debug Panel", expanded=not _OPENAI_OK):
+        st.markdown("**Worker Health**")
+        st.write(f"🐍 Python: `{sys.version.split()[0]}`")
+        st.write(f"🖥️ Platform: `{platform.system()} {platform.release()}`")
+
+        if _OPENAI_OK:
+            st.success(f"✅ openai {_OPENAI_VER} loaded")
+        else:
+            st.error(f"❌ openai failed: {_OPENAI_ERR}")
+            st.code("pip install openai==1.35.13 httpx==0.27.2", language="bash")
+
+        st.write(f"📦 httpx: `{_HTTPX_VER}`")
+        st.write(f"📦 streamlit: `{st.__version__}`")
+
+        st.markdown("---")
+        st.markdown("**Session**")
+        st.write(f"Messages in memory: `{len(st.session_state.messages)}`")
+        idle = int(time.time() - st.session_state.last_activity)
+        st.write(f"Idle: `{idle}s`")
+
+        st.markdown("---")
+        st.markdown("**Common fixes**")
+        st.markdown("""
+- **Worker offline** → Check the branch is `claude/funny-hopper-yphn7v`, then Reboot app on Streamlit Cloud
+- **openai error** → Pin versions in requirements.txt: `openai==1.35.13` and `httpx==0.27.2`
+- **No voice** → Use Chrome or Edge (Firefox lacks Web Speech API)
+- **Disconnecting** → The JS keep-alive pings every 20s; if it still drops, Reboot app
+        """)
+
+        if st.button("🔄 Force page refresh"):
+            st.rerun()
 
 # ── Header ───────────────────────────────────────────────────────────────────
 st.markdown("## 🤖 J.A.R.V.I.S.")
