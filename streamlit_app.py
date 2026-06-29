@@ -1,7 +1,15 @@
 import streamlit as st
 import streamlit.components.v1 as components
-from openai import OpenAI
 import time
+import json
+
+# Safe import — app renders even if openai failed to install
+try:
+    from openai import OpenAI
+    _OPENAI_OK = True
+except Exception as _openai_err:
+    _OPENAI_OK = False
+    _OPENAI_ERR = str(_openai_err)
 
 st.set_page_config(page_title="Jarvis", page_icon="🤖", layout="wide")
 
@@ -11,241 +19,188 @@ JARVIS_SYSTEM = (
     "with subtle wit. Address the user respectfully and keep voice replies concise."
 )
 
-# ── Session state defaults ──────────────────────────────────────────────────
+# ── Session state ────────────────────────────────────────────────────────────
 for key, default in {
     "messages": [],
     "voice_text": "",
-    "speaking": False,
     "last_activity": time.time(),
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
 
-# ── Sidebar config ──────────────────────────────────────────────────────────
+# ── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("⚙️ Jarvis Config")
-    api_key = st.text_input("Together AI Key", type="password",
-                             help="Get a free key at together.ai")
+    api_key = st.text_input(
+        "Together AI Key", type="password",
+        help="Free key at together.ai — used to call Hermes"
+    )
     model = st.selectbox("Hermes Model", [
         "NousResearch/Hermes-3-Llama-3.1-8B-Turbo",
         "NousResearch/Hermes-3-Llama-3.1-70B-Turbo",
         "NousResearch/Hermes-2-Pro-Llama-3-8B",
     ])
-    voice_enabled = st.toggle("Voice Output (TTS)", value=True)
+    voice_on = st.toggle("Voice output (TTS)", value=True)
     st.markdown("---")
     if st.button("🗑️ Clear conversation"):
         st.session_state.messages = []
         st.rerun()
 
-# ── Voice bridge (STT + TTS via Web Speech API) ─────────────────────────────
-# Uses a Streamlit component for bidirectional JS<->Python messaging.
-VOICE_COMPONENT = """
+    if not _OPENAI_OK:
+        st.error(f"openai package failed to load:\n{_OPENAI_ERR}")
+
+# ── Header ───────────────────────────────────────────────────────────────────
+st.markdown("## 🤖 J.A.R.V.I.S.")
+st.caption("Powered by Hermes via Together AI")
+
+# ── Voice bridge ─────────────────────────────────────────────────────────────
+VOICE_HTML = """
 <style>
-  body { margin: 0; font-family: sans-serif; }
-  #container { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  button {
-    padding: 10px 18px; border: none; border-radius: 8px;
-    cursor: pointer; font-size: 15px; transition: background 0.2s;
-  }
-  #start-btn { background: #1e90ff; color: #fff; }
-  #start-btn:hover { background: #1278d4; }
-  #start-btn.listening { background: #e74c3c; animation: pulse 1.2s infinite; }
-  #stop-btn  { background: #555; color: #fff; }
-  #stop-btn:hover { background: #333; }
-  #status { font-size: 13px; color: #aaa; margin-top: 6px; width: 100%; }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+  body{margin:0;font-family:sans-serif}
+  #wrap{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  button{padding:10px 18px;border:none;border-radius:8px;cursor:pointer;font-size:15px}
+  #btn-mic{background:#1e90ff;color:#fff}
+  #btn-mic.on{background:#e74c3c;animation:pulse 1.2s infinite}
+  #btn-mute{background:#555;color:#fff}
+  #status{font-size:13px;color:#999;margin-top:6px;width:100%}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
 </style>
-<div id="container">
-  <button id="start-btn" onclick="toggleListen()">🎤 Speak to Jarvis</button>
-  <button id="stop-btn" onclick="stopSpeaking()">🔇 Mute Jarvis</button>
+<div id="wrap">
+  <button id="btn-mic"  onclick="toggleMic()">🎤 Speak to Jarvis</button>
+  <button id="btn-mute" onclick="mute()">🔇 Mute</button>
 </div>
 <div id="status">Ready.</div>
 
 <script>
-let recognition = null;
-let isListening = false;
+var rec=null, going=false;
 
-// ── Speech Recognition (STT) ───────────────────────────────────────────────
-function toggleListen() {
-  isListening ? stopListen() : startListen();
-}
+function toggleMic(){ going ? stopMic() : startMic(); }
 
-function startListen() {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) {
-    setStatus("⚠️ Browser doesn't support speech recognition (try Chrome).");
-    return;
-  }
-  recognition = new SR();
-  recognition.lang = 'en-US';
-  recognition.continuous = false;
-  recognition.interimResults = false;
-
-  recognition.onstart = () => {
-    isListening = true;
-    document.getElementById('start-btn').classList.add('listening');
-    document.getElementById('start-btn').textContent = '⏹ Listening…';
+function startMic(){
+  var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){setStatus('⚠️ Use Chrome for voice input.');return;}
+  rec=new SR();
+  rec.lang='en-US'; rec.continuous=false; rec.interimResults=false;
+  rec.onstart=function(){
+    going=true;
+    document.getElementById('btn-mic').classList.add('on');
+    document.getElementById('btn-mic').textContent='⏹ Listening…';
     setStatus('Listening…');
   };
-
-  recognition.onresult = (e) => {
-    const text = e.results[0][0].transcript;
-    setStatus('Heard: ' + text);
-    // Send transcript to Streamlit
-    window.parent.postMessage({type: 'streamlit:setComponentValue', value: text}, '*');
+  rec.onresult=function(e){
+    var t=e.results[0][0].transcript;
+    setStatus('Heard: '+t);
+    window.parent.postMessage({type:'streamlit:setComponentValue',value:t},'*');
   };
-
-  recognition.onerror = (e) => setStatus('Error: ' + e.error);
-
-  recognition.onend = () => {
-    isListening = false;
-    document.getElementById('start-btn').classList.remove('listening');
-    document.getElementById('start-btn').textContent = '🎤 Speak to Jarvis';
-    if (document.getElementById('status').textContent === 'Listening…') {
-      setStatus('Ready.');
-    }
+  rec.onerror=function(e){setStatus('Error: '+e.error);};
+  rec.onend=function(){
+    going=false;
+    document.getElementById('btn-mic').classList.remove('on');
+    document.getElementById('btn-mic').textContent='🎤 Speak to Jarvis';
+    if(document.getElementById('status').textContent==='Listening…')setStatus('Ready.');
   };
-
-  recognition.start();
+  rec.start();
 }
 
-function stopListen() {
-  if (recognition) recognition.stop();
-}
+function stopMic(){ if(rec)rec.stop(); }
+function mute(){ if(window.speechSynthesis)window.speechSynthesis.cancel(); }
 
-// ── Text-to-Speech (TTS) ───────────────────────────────────────────────────
-function speak(text) {
-  if (!window.speechSynthesis) return;
+function speak(text){
+  if(!window.speechSynthesis)return;
   window.speechSynthesis.cancel();
-  const utt = new SpeechSynthesisUtterance(text);
-  utt.rate = 0.95; utt.pitch = 0.85; utt.volume = 1.0;
-  // Prefer a British/authoritative voice for Jarvis feel
-  const voices = window.speechSynthesis.getVoices();
-  const pick = voices.find(v =>
-    /daniel|alex|google uk|en-gb/i.test(v.name + v.lang)
-  );
-  if (pick) utt.voice = pick;
-  window.speechSynthesis.speak(utt);
+  var u=new SpeechSynthesisUtterance(text);
+  u.rate=0.95; u.pitch=0.85; u.volume=1;
+  var vs=window.speechSynthesis.getVoices();
+  var v=vs.find(function(x){return /daniel|alex|google uk|en-gb/i.test(x.name+x.lang);});
+  if(v)u.voice=v;
+  window.speechSynthesis.speak(u);
 }
 
-function stopSpeaking() {
-  if (window.speechSynthesis) window.speechSynthesis.cancel();
-}
-
-// ── Bridge: receive messages from Python (via st.components query param) ───
-// Streamlit passes a "speak" payload via the component value mechanism.
-window.addEventListener('message', (e) => {
-  if (e.data && e.data.type === 'speak_response') {
-    speak(e.data.text);
+window.addEventListener('message',function(e){
+  if(e.data&&e.data.type==='streamlit:render'&&e.data.args&&e.data.args.speak){
+    speak(e.data.args.speak);
   }
 });
 
-// Streamlit component init handshake
-window.addEventListener('message', (e) => {
-  if (e.data && e.data.type === 'streamlit:render') {
-    const args = e.data.args || {};
-    if (args.speak) speak(args.speak);
-  }
-});
+function setStatus(m){document.getElementById('status').textContent=m;}
 
-function setStatus(msg) {
-  document.getElementById('status').textContent = msg;
-}
-
-// Keep-alive ping so Streamlit doesn't drop the WebSocket
-setInterval(() => {
-  window.parent.postMessage({type: 'streamlit:keepAlive'}, '*');
-}, 25000);
+// Keep-alive so the WebSocket doesn't time out
+setInterval(function(){
+  window.parent.postMessage({type:'streamlit:keepAlive'},'*');
+},20000);
 </script>
 """
 
-# ── Layout ──────────────────────────────────────────────────────────────────
-st.markdown("## 🤖 J.A.R.V.I.S.")
-st.caption(f"Powered by Hermes · {model.split('/')[-1]}")
+voice_val = components.html(VOICE_HTML, height=90)
 
-# Render voice component
-voice_val = components.html(VOICE_COMPONENT, height=90)
-
-# ── Handle voice input ───────────────────────────────────────────────────────
-# voice_val is the transcript string sent via postMessage
 if voice_val and isinstance(voice_val, str) and voice_val.strip():
     st.session_state.voice_text = voice_val.strip()
 
-# ── Chat input (text fallback) ───────────────────────────────────────────────
-user_input = st.chat_input("Type a message or use the mic above…")
-prompt = user_input or (st.session_state.pop("voice_text", "") if st.session_state.voice_text else None)
+# ── Chat input ────────────────────────────────────────────────────────────────
+typed = st.chat_input("Type a message or use the mic above…")
+prompt = typed or (st.session_state.voice_text if st.session_state.voice_text else None)
+if prompt:
+    st.session_state.voice_text = ""
 
-# ── Display conversation ─────────────────────────────────────────────────────
-chat_area = st.container()
-with chat_area:
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.write(msg["content"])
+# ── Conversation display ──────────────────────────────────────────────────────
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.write(msg["content"])
 
-# ── Generate response ────────────────────────────────────────────────────────
+# ── Generate response ─────────────────────────────────────────────────────────
 if prompt:
     if not api_key:
-        st.warning("Enter your Together AI key in the sidebar to activate Jarvis.")
+        st.warning("⚠️ Enter your Together AI key in the sidebar to activate Jarvis.")
+        st.stop()
+
+    if not _OPENAI_OK:
+        st.error("The openai package didn't load — check the sidebar for details.")
         st.stop()
 
     st.session_state.messages.append({"role": "user", "content": prompt})
-    with chat_area:
-        with st.chat_message("user"):
-            st.write(prompt)
+    with st.chat_message("user"):
+        st.write(prompt)
 
-    client = OpenAI(
-        api_key=api_key,
-        base_url="https://api.together.xyz/v1",
-    )
+    client = OpenAI(api_key=api_key, base_url="https://api.together.xyz/v1")
 
-    with chat_area:
-        with st.chat_message("assistant"):
-            placeholder = st.empty()
-            full_reply = ""
-            try:
-                stream = client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": JARVIS_SYSTEM},
-                        *st.session_state.messages,
-                    ],
-                    stream=True,
-                    max_tokens=512,
-                    temperature=0.7,
-                )
-                for chunk in stream:
-                    delta = chunk.choices[0].delta.content or ""
-                    full_reply += delta
-                    placeholder.write(full_reply + "▌")
-                placeholder.write(full_reply)
-            except Exception as e:
-                full_reply = f"⚠️ Error: {e}"
-                placeholder.write(full_reply)
+    with st.chat_message("assistant"):
+        box = st.empty()
+        reply = ""
+        try:
+            stream = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "system", "content": JARVIS_SYSTEM},
+                          *st.session_state.messages],
+                stream=True,
+                max_tokens=512,
+                temperature=0.7,
+            )
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content or ""
+                reply += delta
+                box.write(reply + "▌")
+            box.write(reply)
+        except Exception as exc:
+            reply = f"⚠️ {exc}"
+            box.error(reply)
 
-    st.session_state.messages.append({"role": "assistant", "content": full_reply})
+    st.session_state.messages.append({"role": "assistant", "content": reply})
     st.session_state.last_activity = time.time()
 
-    # ── Trigger TTS via a fresh component render with speak payload ──────────
-    if voice_enabled and full_reply and not full_reply.startswith("⚠️"):
-        # Inject a one-shot TTS component; auto-height=0 keeps it invisible
-        tts_js = f"""
-        <script>
-        (function() {{
-          const text = {repr(full_reply)};
-          function speak(t) {{
-            if (!window.speechSynthesis) return;
-            window.speechSynthesis.cancel();
-            const utt = new SpeechSynthesisUtterance(t);
-            utt.rate = 0.95; utt.pitch = 0.85;
-            const voices = window.speechSynthesis.getVoices();
-            const pick = voices.find(v => /daniel|alex|google uk|en-gb/i.test(v.name + v.lang));
-            if (pick) utt.voice = pick;
-            window.speechSynthesis.speak(utt);
-          }}
-          // Voices may not be loaded yet
-          if (window.speechSynthesis.getVoices().length) {{ speak(text); }}
-          else {{ window.speechSynthesis.onvoiceschanged = () => speak(text); }}
-        }})();
-        </script>
-        """
-        components.html(tts_js, height=0)
+    if voice_on and reply and not reply.startswith("⚠️"):
+        tts = f"""<script>
+(function(){{
+  var text={json.dumps(reply)};
+  function go(){{
+    var u=new SpeechSynthesisUtterance(text);
+    u.rate=0.95;u.pitch=0.85;
+    var vs=window.speechSynthesis.getVoices();
+    var v=vs.find(function(x){{return /daniel|alex|google uk|en-gb/i.test(x.name+x.lang);}});
+    if(v)u.voice=v;
+    window.speechSynthesis.speak(u);
+  }}
+  if(window.speechSynthesis.getVoices().length)go();
+  else window.speechSynthesis.onvoiceschanged=go;
+}})();
+</script>"""
+        components.html(tts, height=0)
