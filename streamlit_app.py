@@ -45,13 +45,12 @@ for key, default in {
 with st.sidebar:
     st.title("⚙️ Settings")
     api_key = st.text_input(
-        "Together AI Key", type="password",
-        help="Free key at together.ai — used to call Hermes"
+        "DeepSeek API Key", type="password",
+        help="Get your key at platform.deepseek.com"
     )
-    model = st.selectbox("Hermes Model", [
-        "NousResearch/Hermes-3-Llama-3.1-8B-Turbo",
-        "NousResearch/Hermes-3-Llama-3.1-70B-Turbo",
-        "NousResearch/Hermes-2-Pro-Llama-3-8B",
+    model = st.selectbox("Model", [
+        "deepseek-chat",
+        "deepseek-reasoner",
     ])
     voice_on = st.toggle("Voice output (TTS)", value=True)
     st.markdown("---")
@@ -63,7 +62,7 @@ with st.sidebar:
 col_title, col_admin = st.columns([5, 1])
 with col_title:
     st.markdown("## 🤖 J.A.R.V.I.S.")
-    st.caption("Powered by Hermes via Together AI")
+    st.caption("Powered by DeepSeek")
 with col_admin:
     st.write("")
     if st.button("🛠️ Admin", use_container_width=True):
@@ -200,7 +199,7 @@ if prompt:
     with st.chat_message("user"):
         st.write(prompt)
 
-    client = OpenAI(api_key=api_key, base_url="https://api.together.xyz/v1")
+    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
     with st.chat_message("assistant"):
         box = st.empty()
